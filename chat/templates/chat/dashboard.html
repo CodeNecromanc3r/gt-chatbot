@@ -175,7 +175,7 @@
       const data = await res.json();
       if (res.ok) {
         status.textContent = endpoint === "reload"
-          ? "Reloaded " + data.documents_loaded + " documents"
+          ? "Reloaded " + data.documents_loaded + " chunks"
           : "Knowledge base cleared";
         status.classList.add("kb-success");
       } else {
