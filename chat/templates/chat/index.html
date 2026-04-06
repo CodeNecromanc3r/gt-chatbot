@@ -1,19 +1,18 @@
-{% extends 'base.html' %}
+{% extends "base.html" %}
 
 {% block content %}
   <div class="chat-wrapper">
     <div id="messages">
       <div class="welcome">
-        <p>
-          Welcome! I am your <strong>Chick-fil-A</strong> assistant.
-        </p>
+        <p>Welcome! I am your <strong>Chick-fil-A</strong> assistant.</p>
+        <p>Ask me about the menu, locations, hours, and more.</p>
       </div>
     </div>
   </div>
 
   <div class="input-area">
     <div class="input-row">
-      <textarea id="user-input" rows="1" placeholder="Ask about the menu, locations, etc."></textarea>
+      <textarea id="user-input" rows="1" placeholder="Ask about the menu, locations, hours…"></textarea>
       <button id="send" aria-label="Send">
         <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
           <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
@@ -70,7 +69,7 @@
         const res = await fetch("/api/chat/query/", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query })
+          body: JSON.stringify({ query }),
         })
 
         const data = await res.json()
