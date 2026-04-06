@@ -331,6 +331,7 @@ header p {
   display: flex;
   align-items: flex-end;
   position: relative;
+  overflow: hidden;
 }
 
 .chart-y-axis {
@@ -351,12 +352,15 @@ header p {
   align-items: flex-end;
   gap: 2px;
   height: 100%;
+  min-width: 0;
+  overflow: hidden;
   border-bottom: 1px solid #eee;
 }
 
 .chart-bar {
   border-radius: 3px 3px 0 0;
   min-height: 2px;
+  flex-shrink: 1;
   transition: opacity .2s;
 }
 
