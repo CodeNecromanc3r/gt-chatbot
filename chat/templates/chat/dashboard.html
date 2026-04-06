@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Chick-fil-A Assistant{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+  <!-- Time range filter -->
+  <div class="filter-bar">
+    <span class="filter-label">Time range:</span>
+    {% for range_key in time_ranges %}
+      <button class="filter-btn {% if range_key == current_range %}active{% endif %}"
+              data-range="{{ range_key }}">{{ range_key }}</button>
+    {% endfor %}
+  </div>
+
+  <!-- Summary cards -->
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <div class="metric-value" id="total-queries">{{ total_queries }}</div>
+      <div class="metric-label">Total Queries</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-value" id="avg-response">{{ avg_response_time }}<span class="metric-unit">ms</span></div>
+      <div class="metric-label">Avg Response Time</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-value {% if failure_rate > 5 %}metric-danger{% endif %}" id="failure-rate">{{ failure_rate }}<span class="metric-unit">%</span></div>
+      <div class="metric-label">Failure Rate</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-value" id="queries-today">{{ queries_today }}</div>
+      <div class="metric-label">Queries Today</div>
+    </div>
+  </div>
+
+  <!-- Response time chart -->
+  <div class="dashboard-card">
+    <h2 class="card-title">Response Times</h2>
+    <div id="chart-container" class="chart-container">
+      <div class="chart-loading">Loading chart data...</div>
+    </div>
+  </div>
+
+  <!-- Query logs table -->
+  <div class="dashboard-card">
+    <h2 class="card-title">Recent Queries</h2>
+    <div class="table-wrapper">
+      <table class="logs-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Query</th>
+            <th>Response Time</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="logs-body">
+          <tr><td colspan="4" class="table-loading">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="pagination" id="pagination"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  const currentRange = "{{ current_range }}";
+  let currentPage = 1;
+
+  // Filter buttons — reload page with new range
+  document.querySelectorAll(".filter-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      window.location.href = "/dashboard/?range=" + btn.dataset.range;
+    });
+  });
+
+  // Escape HTML to prevent XSS
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  // Load paginated query logs
+  async function loadLogs(page) {
+    const res = await fetch("/api/chat/dashboard/logs/?range=" + currentRange + "&page=" + page);
+    const data = await res.json();
+    const tbody = document.getElementById("logs-body");
+
+    if (!data.logs.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="table-empty">No queries found for this time range.</td></tr>';
+      document.getElementById("pagination").innerHTML = "";
+      return;
+    }
+
+    tbody.innerHTML = data.logs.map(log => `
+      <tr class="${log.is_success ? '' : 'row-error'}">
+        <td>${new Date(log.created_at).toLocaleString()}</td>
+        <td class="cell-query">${escapeHtml(log.query)}</td>
+        <td>${log.response_time_ms != null ? log.response_time_ms + ' ms' : '\u2014'}</td>
+        <td>
+          <span class="status-badge ${log.is_success ? 'status-ok' : 'status-fail'}">
+            ${log.is_success ? 'OK' : 'Error'}
+          </span>
+        </td>
+      </tr>
+    `).join("");
+
+    renderPagination(data.page, data.total_pages);
+  }
+
+  function renderPagination(page, totalPages) {
+    const el = document.getElementById("pagination");
+    if (totalPages <= 1) { el.innerHTML = ""; return; }
+    let html = "";
+    if (page > 1) html += '<button class="page-btn" data-page="' + (page - 1) + '">&laquo; Prev</button>';
+    html += '<span class="page-info">Page ' + page + ' of ' + totalPages + '</span>';
+    if (page < totalPages) html += '<button class="page-btn" data-page="' + (page + 1) + '">Next &raquo;</button>';
+    el.innerHTML = html;
+    el.querySelectorAll(".page-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        currentPage = parseInt(btn.dataset.page);
+        loadLogs(currentPage);
+      });
+    });
+  }
+
+  // Load response time bar chart
+  async function loadChart() {
+    const res = await fetch("/api/chat/dashboard/chart/?range=" + currentRange);
+    const data = await res.json();
+    const container = document.getElementById("chart-container");
+
+    if (!data.data.length) {
+      container.innerHTML = '<div class="chart-empty">No data available for this time range.</div>';
+      return;
+    }
+
+    const maxTime = Math.max(...data.data.map(d => d.response_time_ms));
+    const barWidth = Math.max(4, Math.floor(container.clientWidth / data.data.length) - 2);
+
+    container.innerHTML =
+      '<div class="chart-y-axis">' +
+        '<span>' + maxTime + 'ms</span>' +
+        '<span>' + Math.round(maxTime / 2) + 'ms</span>' +
+        '<span>0</span>' +
+      '</div>' +
+      '<div class="chart-bars">' +
+        data.data.map(d => {
+          const pct = (d.response_time_ms / maxTime) * 100;
+          const color = d.is_success ? '#E4002B' : '#888';
+          return '<div class="chart-bar" style="height:' + pct + '%;width:' + barWidth + 'px;background:' + color + ';" title="' + d.response_time_ms + 'ms at ' + new Date(d.timestamp).toLocaleTimeString() + '"></div>';
+        }).join("") +
+      '</div>';
+  }
+
+  // Init
+  loadLogs(currentPage);
+  loadChart();
+</script>
+{% endblock %}

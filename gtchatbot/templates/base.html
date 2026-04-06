@@ -19,6 +19,10 @@
         <h1>Chick-fil-A Assistant</h1>
         <p>Ask about our menu, locations, hours, etc.</p>
       </div>
+      <nav class="header-nav">
+        <a href="{% url 'interface' %}" class="nav-link {% if request.resolver_match.url_name == 'interface' %}active{% endif %}">Chat</a>
+        <a href="{% url 'dashboard' %}" class="nav-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">Dashboard</a>
+      </nav>
     </header>
 
     {% block content %}

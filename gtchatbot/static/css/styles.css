@@ -195,3 +195,285 @@ header p {
   height: 18px;
   fill: #fff;
 }
+
+/* ── Header nav ─────────────────────────────────────────────────────── */
+
+.header-nav {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.nav-link {
+  color: #fff;
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 18px;
+  border: 1.5px solid rgba(255,255,255,0.4);
+  transition: background .2s, border-color .2s;
+}
+
+.nav-link:hover,
+.nav-link.active {
+  background: rgba(255,255,255,0.2);
+  border-color: #fff;
+}
+
+/* ── Dashboard layout ───────────────────────────────────────────────── */
+
+.dashboard {
+  width: 100%;
+  max-width: 960px;
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ── Filter bar ─────────────────────────────────────────────────────── */
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-label {
+  font-size: 0.85rem;
+  color: #666;
+  font-weight: 500;
+}
+
+.filter-btn {
+  padding: 6px 14px;
+  border: 1.5px solid #ddd;
+  border-radius: 18px;
+  background: #fff;
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all .2s;
+}
+
+.filter-btn:hover {
+  border-color: #E4002B;
+  color: #E4002B;
+}
+
+.filter-btn.active {
+  background: #E4002B;
+  color: #fff;
+  border-color: #E4002B;
+}
+
+/* ── Metric cards ───────────────────────────────────────────────────── */
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.metric-card {
+  background: #fff;
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  text-align: center;
+}
+
+.metric-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #E4002B;
+  line-height: 1.2;
+}
+
+.metric-unit {
+  font-size: 0.9rem;
+  font-weight: 400;
+  color: #888;
+}
+
+.metric-label {
+  font-size: 0.82rem;
+  color: #666;
+  margin-top: 4px;
+}
+
+.metric-danger {
+  color: #c0392b;
+}
+
+/* ── Dashboard cards (chart, table) ─────────────────────────────────── */
+
+.dashboard-card {
+  background: #fff;
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.card-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 16px;
+}
+
+/* ── Response time chart ────────────────────────────────────────────── */
+
+.chart-container {
+  height: 180px;
+  display: flex;
+  align-items: flex-end;
+  position: relative;
+}
+
+.chart-y-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 100%;
+  padding-right: 8px;
+  font-size: 0.7rem;
+  color: #999;
+  min-width: 48px;
+  text-align: right;
+}
+
+.chart-bars {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 100%;
+  border-bottom: 1px solid #eee;
+}
+
+.chart-bar {
+  border-radius: 3px 3px 0 0;
+  min-height: 2px;
+  transition: opacity .2s;
+}
+
+.chart-bar:hover {
+  opacity: 0.75;
+}
+
+.chart-loading,
+.chart-empty {
+  width: 100%;
+  text-align: center;
+  color: #999;
+  font-size: 0.85rem;
+  align-self: center;
+}
+
+/* ── Logs table ─────────────────────────────────────────────────────── */
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+.logs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.logs-table th {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 2px solid #eee;
+  color: #666;
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.logs-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  color: #333;
+}
+
+.logs-table tr:hover {
+  background: #fafafa;
+}
+
+.row-error {
+  background: #fff5f5;
+}
+
+.row-error:hover {
+  background: #ffebeb !important;
+}
+
+.cell-query {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.status-ok {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.status-fail {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.table-loading,
+.table-empty {
+  text-align: center;
+  color: #999;
+  padding: 24px 12px;
+  font-style: italic;
+}
+
+/* ── Pagination ─────────────────────────────────────────────────────── */
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding-top: 16px;
+}
+
+.page-btn {
+  padding: 6px 14px;
+  border: 1.5px solid #ddd;
+  border-radius: 18px;
+  background: #fff;
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all .2s;
+}
+
+.page-btn:hover {
+  border-color: #E4002B;
+  color: #E4002B;
+}
+
+.page-info {
+  font-size: 0.8rem;
+  color: #666;
+}
