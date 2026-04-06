@@ -28,6 +28,7 @@ location_data: list[dict] = []   # raw location records for keyword search
 
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "chickfila.json"
+NUTRITION_FILE = Path(__file__).resolve().parent.parent / "data" / "nutrition-facts.json"
 
 LOCATION_KEYWORDS = {
     "location", "locations", "address", "near", "nearby", "closest", "closest",
@@ -54,6 +55,92 @@ def load_location_data():
     global location_data
     if DATA_FILE.exists():
         location_data = json.loads(DATA_FILE.read_text()).get("locations", [])
+
+
+def build_documents():
+    """Build all LangChain documents from data files. Used by apps.py and reload endpoint."""
+    from langchain_core.documents import Document
+
+    docs = []
+    if DATA_FILE.exists():
+        data = json.loads(DATA_FILE.read_text())
+
+        for item in data.get("menu", []):
+            name = item.get("name", "")
+            category = item.get("category") or ""
+            all_cats = ", ".join(item.get("all_categories") or [])
+            url = item.get("url") or ""
+            calories = item.get("calories")
+            text = f"Menu item: {name}. Category: {category}."
+            if all_cats and all_cats != category:
+                text += f" Also in: {all_cats}."
+            if calories:
+                text += f" Calories: {calories}."
+            if url and "chick-fil-a.com/menu" in url:
+                text += f" Details: {url}."
+            docs.append(Document(page_content=text, metadata={"topic": "menu"}))
+
+        for loc in data.get("locations", []):
+            name = loc.get("name", "")
+            phone = loc.get("phone") or ""
+            addr = loc.get("address") or {}
+            address_str = ", ".join(filter(None, [
+                addr.get("street", ""), addr.get("city", ""),
+                addr.get("state", ""), addr.get("zip", ""),
+            ]))
+            hours_parts = []
+            for h in loc.get("hours") or []:
+                days = h.get("day_of_week") or []
+                if isinstance(days, list):
+                    days = "/".join(days)
+                opens = h.get("opens", "")
+                closes = h.get("closes", "")
+                if opens.lower() == "closed":
+                    hours_parts.append(f"{days}: Closed")
+                else:
+                    hours_parts.append(f"{days}: {opens}–{closes}")
+            hours_str = "; ".join(hours_parts)
+            text = f"Chick-fil-A location: {name}."
+            if address_str:
+                text += f" Address: {address_str}."
+            if phone:
+                text += f" Phone: {phone}."
+            if hours_str:
+                text += f" Hours: {hours_str}."
+            docs.append(Document(page_content=text, metadata={"topic": "locations"}))
+
+    if NUTRITION_FILE.exists():
+        nutrition = json.loads(NUTRITION_FILE.read_text())
+        for item in nutrition:
+            name = item.get("name", "")
+            category = item.get("category", "")
+            allergens = ", ".join(item.get("allergens", [])) or "None listed"
+            text = (
+                f"Nutrition facts for {name}."
+                f" Category: {category}."
+                f" Serving size: {item.get('serving_size_g', '?')}g."
+                f" Calories: {item.get('calories_kcal', '?')} kcal."
+                f" Total fat: {item.get('total_fat_g', '?')}g."
+                f" Saturated fat: {item.get('saturated_fat_g', '?')}g."
+                f" Carbohydrates: {item.get('carbohydrate_g', '?')}g."
+                f" Sugars: {item.get('sugars_g', '?')}g."
+                f" Protein: {item.get('protein_g', '?')}g."
+                f" Salt: {item.get('salt_g', '?')}g."
+                f" Allergens: {allergens}."
+            )
+            docs.append(Document(page_content=text, metadata={"topic": "nutrition"}))
+
+    return docs
+
+
+def reload_knowledge_base():
+    """Clear and rebuild the vector store and location data from disk."""
+    global rag_store
+    rag_store = None
+    docs = build_documents()
+    get_or_build_store(docs)
+    load_location_data()
+    return len(docs)
 
 
 # ── location keyword search ───────────────────────────────────────────────────
@@ -350,3 +437,28 @@ def dashboard_api_chart(request):
             for ts, rt, ok in entries
         ]
     })
+
+
+@csrf_exempt
+@login_required(login_url="/admin/login/")
+@staff_required
+def dashboard_api_reload(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    try:
+        count = reload_knowledge_base()
+        return JsonResponse({"status": "ok", "documents_loaded": count})
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+@csrf_exempt
+@login_required(login_url="/admin/login/")
+@staff_required
+def dashboard_api_clear(request):
+    global rag_store, location_data
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+    rag_store = None
+    location_data = []
+    return JsonResponse({"status": "ok"})

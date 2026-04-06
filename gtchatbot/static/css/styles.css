@@ -232,6 +232,54 @@ header p {
   gap: 20px;
 }
 
+/* ── Knowledge base controls ─────────────────────────────────────────── */
+
+.kb-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.kb-btn {
+  padding: 6px 14px;
+  border: 1.5px solid #ddd;
+  border-radius: 18px;
+  background: #fff;
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all .2s;
+}
+
+.kb-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.kb-reload:hover:not(:disabled) {
+  border-color: #2e7d32;
+  color: #2e7d32;
+}
+
+.kb-clear:hover:not(:disabled) {
+  border-color: #c62828;
+  color: #c62828;
+}
+
+.kb-status {
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.kb-status.kb-success {
+  color: #2e7d32;
+}
+
+.kb-status.kb-error {
+  color: #c62828;
+}
+
 /* ── Filter bar ─────────────────────────────────────────────────────── */
 
 .filter-bar {

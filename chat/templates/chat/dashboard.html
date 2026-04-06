@@ -4,6 +4,14 @@
 
 {% block content %}
 <div class="dashboard">
+  <!-- Knowledge base controls -->
+  <div class="kb-controls">
+    <span class="filter-label">Knowledge Base:</span>
+    <button class="kb-btn kb-reload" id="kb-reload">Reload</button>
+    <button class="kb-btn kb-clear" id="kb-clear">Clear</button>
+    <span class="kb-status" id="kb-status"></span>
+  </div>
+
   <!-- Time range filter -->
   <div class="filter-bar">
     <span class="filter-label">Time range:</span>
@@ -155,6 +163,40 @@
         }).join("") +
       '</div>';
   }
+
+  // Knowledge base controls
+  async function kbAction(endpoint, btn) {
+    const status = document.getElementById("kb-status");
+    btn.disabled = true;
+    status.textContent = "Working...";
+    status.className = "kb-status";
+    try {
+      const res = await fetch("/api/chat/dashboard/" + endpoint + "/", {method: "POST"});
+      const data = await res.json();
+      if (res.ok) {
+        status.textContent = endpoint === "reload"
+          ? "Reloaded " + data.documents_loaded + " documents"
+          : "Knowledge base cleared";
+        status.classList.add("kb-success");
+      } else {
+        status.textContent = "Error: " + (data.error || "Unknown");
+        status.classList.add("kb-error");
+      }
+    } catch (e) {
+      status.textContent = "Request failed";
+      status.classList.add("kb-error");
+    }
+    btn.disabled = false;
+  }
+
+  document.getElementById("kb-reload").addEventListener("click", function() {
+    kbAction("reload", this);
+  });
+  document.getElementById("kb-clear").addEventListener("click", function() {
+    if (confirm("Clear the knowledge base? The chatbot will not be able to answer questions until it is reloaded.")) {
+      kbAction("clear", this);
+    }
+  });
 
   // Init
   loadLogs(currentPage);
