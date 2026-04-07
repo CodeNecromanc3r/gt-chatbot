@@ -462,9 +462,3 @@ def dashboard_api_clear(request):
     rag_store = None
     location_data = []
     return JsonResponse({"status": "ok"})
-
-def normalize_item(item):
-
-def normalize_location(loc):
-
-def normalize_nutrition(item):
