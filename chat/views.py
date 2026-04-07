@@ -54,7 +54,7 @@ def get_or_build_store(documents):
 def load_location_data():
     global location_data
     if DATA_FILE.exists():
-        location_data = json.loads(DATA_FILE.read_text()).get("locations", [])
+        location_data = json.loads(DATA_FILE.read_text(encoding='utf-8')).get("locations", [])
 
 
 def build_documents():
@@ -63,7 +63,7 @@ def build_documents():
 
     docs = []
     if DATA_FILE.exists():
-        data = json.loads(DATA_FILE.read_text())
+        data = json.loads(DATA_FILE.read_text(encoding='utf-8'))
 
         for item in data.get("menu", []):
             name = item.get("name", "")
@@ -110,7 +110,7 @@ def build_documents():
             docs.append(Document(page_content=text, metadata={"topic": "locations"}))
 
     if NUTRITION_FILE.exists():
-        nutrition = json.loads(NUTRITION_FILE.read_text())
+        nutrition = json.loads(NUTRITION_FILE.read_text(encoding='utf-8'))
         for item in nutrition:
             name = item.get("name", "")
             category = item.get("category", "")

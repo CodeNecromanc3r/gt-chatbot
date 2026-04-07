@@ -317,7 +317,8 @@ async def main():
         print(f"  ✓ {len(locations)} locations\n")
 
     OUT_FILE.write_text(
-        json.dumps({"menu": menu, "locations": locations}, indent=2, ensure_ascii=False)
+        json.dumps({"menu": menu, "locations": locations}, indent=2, ensure_ascii=False),
+        encoding='utf-8'
     )
     print(f"=== Done — written to {OUT_FILE} ===")
 
