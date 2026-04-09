@@ -394,12 +394,8 @@ def create_rag_chain(query: str):
 
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
     location_query = _is_location_query(query)
-
-    if location_query:
-        context_fn = RunnableLambda(search_locations)
-    else:
-        retriever = rag_store.as_retriever(search_kwargs={"k": 6})
-        context_fn = retriever | _format_docs
+    retriever = rag_store.as_retriever(search_kwargs={"k": 6})
+    context_fn = retriever | _format_docs
 
     return (
         {"context": context_fn, "question": RunnablePassthrough()}
@@ -410,48 +406,23 @@ def create_rag_chain(query: str):
 
 
 def create_rag_chain_with_sources(query: str):
-    """Create RAG chain that returns both answer and source documents for all query types."""
+    """Create RAG chain that returns both answer and source documents."""
     if rag_store is None:
         raise ValueError("No knowledge base loaded yet.")
 
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
     location_query = _is_location_query(query)
+    retriever = rag_store.as_retriever(search_kwargs={"k": 6})
 
-    if location_query:
-        context, matched_locations = search_locations_with_sources(query)
-        
-        prompt = _build_prompt(location_query)
-        answer = (prompt | llm | StrOutputParser()).invoke({
-            "context": context,
-            "question": query
-        })
-        
-        sources = []
-        for loc in matched_locations:
-            source = {
-                "topic": loc.get("name", "Unknown Location"),
-                "content": f"{loc.get('address', {}).get('city', '')} - {loc.get('phone', '')}"[:100],
-            }
-            if loc.get("url"):
-                source["url"] = loc.get("url")
-            sources.append(source)
-        
-        return {"answer": answer, "sources": sources}
-    else:
-        retriever = rag_store.as_retriever(search_kwargs={"k": 6})
-        
-        def get_answer_with_sources(q):
-            docs = retriever.invoke(q)
-            context = _format_docs(docs)
-            prompt = _build_prompt(location_query)
-            answer = (prompt | llm | StrOutputParser()).invoke({
-                "context": context,
-                "question": q
-            })
-            sources = _extract_sources(docs)
-            return {"answer": answer, "sources": sources}
-        
-        return get_answer_with_sources(query)
+    docs = retriever.invoke(query)
+    context = _format_docs(docs)
+    prompt = _build_prompt(location_query)
+    answer = (prompt | llm | StrOutputParser()).invoke({
+        "context": context,
+        "question": query
+    })
+    sources = _extract_sources(docs)
+    return {"answer": answer, "sources": sources}
 
 
 def interface(request):
