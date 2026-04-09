@@ -2,6 +2,8 @@ import os
 import json
 import re
 import time
+import threading
+import subprocess
 from pathlib import Path
 from datetime import timedelta
 from django.http import JsonResponse
@@ -25,6 +27,8 @@ from .models import Conversation
 
 rag_store = None
 location_data: list[dict] = []   # raw location records for keyword search
+_scrape_state: dict = {"status": "idle", "started_at": None, "finished_at": None, "message": ""}
+_pdf_state: dict = {"status": "idle", "started_at": None, "finished_at": None, "message": ""}
 
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "chickfila.json"
@@ -140,6 +144,9 @@ def build_documents():
             docs.append(Document(page_content=text, metadata=metadata))
 
     if NUTRITION_FILE.exists():
+        # Second ingestion source: PDF document (nutrition.pdf parsed via pdfplumber).
+        # This source provides allergen information and per-100g breakdowns that
+        # the web-scraped nutrition data does not include.
         nutrition = json.loads(NUTRITION_FILE.read_text(encoding='utf-8'))
         for item in nutrition:
             name = item.get("name", "")
@@ -147,19 +154,19 @@ def build_documents():
             serving = item.get("serving_size_g", "?")
             allergens = ", ".join(item.get("allergens", [])) or "None listed"
             text = (
-                f"Nutrition facts for {name} (per {serving}g serving)."
+                f"Allergen and detailed nutrition info for {name} (source: Chick-fil-A nutrition PDF)."
                 f" Category: {category}."
-                f" Calories: {item.get('calories_kcal', '?')} kcal per {serving}g."
-                f" Total fat: {item.get('total_fat_g', '?')}g."
-                f" Saturated fat: {item.get('saturated_fat_g', '?')}g."
-                f" Carbohydrates: {item.get('carbohydrate_g', '?')}g."
-                f" Sugars: {item.get('sugars_g', '?')}g."
-                f" Protein: {item.get('protein_g', '?')}g."
-                f" Salt: {item.get('salt_g', '?')}g."
                 f" Allergens: {allergens}."
-                f" Note: these figures are per {serving}g serving, not per whole meal."
+                f" Per 100g breakdown — Calories: {item.get('calories_kcal', '?')} kcal,"
+                f" Total fat: {item.get('total_fat_g', '?')}g,"
+                f" Saturated fat: {item.get('saturated_fat_g', '?')}g,"
+                f" Carbohydrates: {item.get('carbohydrate_g', '?')}g,"
+                f" Sugars: {item.get('sugars_g', '?')}g,"
+                f" Protein: {item.get('protein_g', '?')}g,"
+                f" Salt: {item.get('salt_g', '?')}g."
+                f" Note: these are per-100g figures, not whole-meal totals."
             )
-            docs.append(Document(page_content=text, metadata={"topic": "Nutrition", "title": name}))
+            docs.append(Document(page_content=text, metadata={"topic": "Allergens", "title": name}))
 
     return docs
 
@@ -629,3 +636,103 @@ def dashboard_api_clear(request):
     rag_store = None
     location_data = []
     return JsonResponse({"status": "ok"})
+
+
+SCRAPE_ETA_SECONDS = 180  # ~3 minutes expected runtime
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+VENV_PYTHON = PROJECT_ROOT / "venv" / "bin" / "python"
+
+
+def _run_scraper():
+    global _scrape_state
+    _scrape_state.update({"status": "running", "started_at": time.time(), "finished_at": None, "message": ""})
+    python = str(VENV_PYTHON) if VENV_PYTHON.exists() else "python"
+    try:
+        result = subprocess.run(
+            [python, "-m", "data.scrape"],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=str(PROJECT_ROOT),
+        )
+        if result.returncode == 0:
+            reload_knowledge_base()
+            _scrape_state.update({"status": "done", "finished_at": time.time(), "message": "Scrape complete. Knowledge base reloaded."})
+        else:
+            raw = (result.stderr or result.stdout or "").strip()
+            # Surface only the final error line, not the full traceback
+            last_error = next((l.strip() for l in reversed(raw.splitlines()) if l.strip()), raw)
+            _scrape_state.update({"status": "error", "finished_at": time.time(), "message": last_error})
+    except Exception as e:
+        _scrape_state.update({"status": "error", "finished_at": time.time(), "message": str(e)})
+
+
+@csrf_exempt
+@login_required(login_url="/admin/login/")
+@staff_required
+@require_POST
+def dashboard_api_scrape(request):
+    if _scrape_state["status"] == "running":
+        return JsonResponse({"error": "Scrape already in progress"}, status=409)
+    threading.Thread(target=_run_scraper, daemon=True).start()
+    return JsonResponse({"status": "started"})
+
+
+@login_required(login_url="/admin/login/")
+@staff_required
+def dashboard_api_scrape_status(request):
+    state = dict(_scrape_state)
+    if state["status"] == "running" and state["started_at"]:
+        elapsed = time.time() - state["started_at"]
+        state["elapsed_seconds"] = int(elapsed)
+        state["eta_seconds"] = max(0, int(SCRAPE_ETA_SECONDS - elapsed))
+    return JsonResponse(state)
+
+
+PDF_ETA_SECONDS = 30
+PDF_EXTRACTOR_PATH = PROJECT_ROOT / "data" / "extract_nutrition.py"
+
+
+def _run_pdf_extractor():
+    global _pdf_state
+    _pdf_state.update({"status": "running", "started_at": time.time(), "finished_at": None, "message": ""})
+    python = str(VENV_PYTHON) if VENV_PYTHON.exists() else "python"
+    try:
+        result = subprocess.run(
+            [python, "-m", "data.extract_nutrition"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(PROJECT_ROOT),
+        )
+        if result.returncode == 0:
+            reload_knowledge_base()
+            _pdf_state.update({"status": "done", "finished_at": time.time(), "message": "PDF extracted. Knowledge base reloaded."})
+        else:
+            raw = (result.stderr or result.stdout or "").strip()
+            last_error = next((l.strip() for l in reversed(raw.splitlines()) if l.strip()), raw)
+            _pdf_state.update({"status": "error", "finished_at": time.time(), "message": last_error})
+    except Exception as e:
+        _pdf_state.update({"status": "error", "finished_at": time.time(), "message": str(e)})
+
+
+@csrf_exempt
+@login_required(login_url="/admin/login/")
+@staff_required
+@require_POST
+def dashboard_api_extract_pdf(request):
+    if _pdf_state["status"] == "running":
+        return JsonResponse({"error": "PDF extraction already in progress"}, status=409)
+    threading.Thread(target=_run_pdf_extractor, daemon=True).start()
+    return JsonResponse({"status": "started"})
+
+
+@login_required(login_url="/admin/login/")
+@staff_required
+def dashboard_api_extract_pdf_status(request):
+    state = dict(_pdf_state)
+    if state["status"] == "running" and state["started_at"]:
+        elapsed = time.time() - state["started_at"]
+        state["elapsed_seconds"] = int(elapsed)
+        state["eta_seconds"] = max(0, int(PDF_ETA_SECONDS - elapsed))
+    return JsonResponse(state)

@@ -9,6 +9,8 @@
     <span class="filter-label">Knowledge Base:</span>
     <button class="kb-btn kb-reload" id="kb-reload">Reload</button>
     <button class="kb-btn kb-clear" id="kb-clear">Clear</button>
+    <button class="kb-btn kb-scrape" id="kb-scrape">Re-scrape Site</button>
+    <button class="kb-btn kb-pdf" id="kb-pdf">Extract PDF</button>
     <span class="kb-status" id="kb-status"></span>
   </div>
 
@@ -70,6 +72,30 @@
     <div class="pagination" id="pagination"></div>
   </div>
 </div>
+
+<!-- Scrape / PDF modal -->
+<div class="modal-overlay" id="job-modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 class="modal-title" id="modal-title">Running...</h3>
+      <div class="modal-icon" id="modal-icon"></div>
+    </div>
+    <p class="modal-subtitle" id="modal-subtitle"></p>
+
+    <div class="modal-progress-track">
+      <div class="modal-progress-fill" id="modal-progress-fill"></div>
+    </div>
+
+    <div class="modal-stats">
+      <span id="modal-elapsed">0s elapsed</span>
+      <span id="modal-eta"></span>
+    </div>
+
+    <p class="modal-message" id="modal-message"></p>
+
+    <button class="modal-close-btn" id="modal-close" style="display:none;">Close</button>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}
@@ -77,45 +103,38 @@
   const currentRange = "{{ current_range }}";
   let currentPage = 1;
 
-  // Filter buttons — reload page with new range
+  // Filter buttons
   document.querySelectorAll(".filter-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       window.location.href = "/dashboard/?range=" + btn.dataset.range;
     });
   });
 
-  // Escape HTML to prevent XSS
   function escapeHtml(text) {
     const div = document.createElement("div");
     div.textContent = text;
     return div.innerHTML;
   }
 
-  // Load paginated query logs
+  // ── Logs ────────────────────────────────────────────────────────────────
+
   async function loadLogs(page) {
     const res = await fetch("/api/chat/dashboard/logs/?range=" + currentRange + "&page=" + page);
     const data = await res.json();
     const tbody = document.getElementById("logs-body");
-
     if (!data.logs.length) {
       tbody.innerHTML = '<tr><td colspan="4" class="table-empty">No queries found for this time range.</td></tr>';
       document.getElementById("pagination").innerHTML = "";
       return;
     }
-
     tbody.innerHTML = data.logs.map(log => `
       <tr class="${log.is_success ? '' : 'row-error'}">
         <td>${new Date(log.created_at).toLocaleString()}</td>
         <td class="cell-query">${escapeHtml(log.query)}</td>
         <td>${log.response_time_ms != null ? log.response_time_ms + ' ms' : '\u2014'}</td>
-        <td>
-          <span class="status-badge ${log.is_success ? 'status-ok' : 'status-fail'}">
-            ${log.is_success ? 'OK' : 'Error'}
-          </span>
-        </td>
+        <td><span class="status-badge ${log.is_success ? 'status-ok' : 'status-fail'}">${log.is_success ? 'OK' : 'Error'}</span></td>
       </tr>
     `).join("");
-
     renderPagination(data.page, data.total_pages);
   }
 
@@ -128,33 +147,24 @@
     if (page < totalPages) html += '<button class="page-btn" data-page="' + (page + 1) + '">Next &raquo;</button>';
     el.innerHTML = html;
     el.querySelectorAll(".page-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        currentPage = parseInt(btn.dataset.page);
-        loadLogs(currentPage);
-      });
+      btn.addEventListener("click", () => { currentPage = parseInt(btn.dataset.page); loadLogs(currentPage); });
     });
   }
 
-  // Load response time bar chart
+  // ── Chart ───────────────────────────────────────────────────────────────
+
   async function loadChart() {
     const res = await fetch("/api/chat/dashboard/chart/?range=" + currentRange);
     const data = await res.json();
     const container = document.getElementById("chart-container");
-
     if (!data.data.length) {
       container.innerHTML = '<div class="chart-empty">No data available for this time range.</div>';
       return;
     }
-
     const maxTime = Math.max(...data.data.map(d => d.response_time_ms));
     const barWidth = Math.max(4, Math.floor(container.clientWidth / data.data.length) - 2);
-
     container.innerHTML =
-      '<div class="chart-y-axis">' +
-        '<span>' + maxTime + 'ms</span>' +
-        '<span>' + Math.round(maxTime / 2) + 'ms</span>' +
-        '<span>0</span>' +
-      '</div>' +
+      '<div class="chart-y-axis"><span>' + maxTime + 'ms</span><span>' + Math.round(maxTime / 2) + 'ms</span><span>0</span></div>' +
       '<div class="chart-bars">' +
         data.data.map(d => {
           const pct = (d.response_time_ms / maxTime) * 100;
@@ -164,7 +174,8 @@
       '</div>';
   }
 
-  // Knowledge base controls
+  // ── KB controls ─────────────────────────────────────────────────────────
+
   async function kbAction(endpoint, btn) {
     const status = document.getElementById("kb-status");
     btn.disabled = true;
@@ -174,9 +185,7 @@
       const res = await fetch("/api/chat/dashboard/" + endpoint + "/", {method: "POST"});
       const data = await res.json();
       if (res.ok) {
-        status.textContent = endpoint === "reload"
-          ? "Reloaded " + data.documents_loaded + " chunks"
-          : "Knowledge base cleared";
+        status.textContent = endpoint === "reload" ? "Reloaded " + data.documents_loaded + " chunks" : "Knowledge base cleared";
         status.classList.add("kb-success");
       } else {
         status.textContent = "Error: " + (data.error || "Unknown");
@@ -189,14 +198,177 @@
     btn.disabled = false;
   }
 
-  document.getElementById("kb-reload").addEventListener("click", function() {
-    kbAction("reload", this);
-  });
+  document.getElementById("kb-reload").addEventListener("click", function() { kbAction("reload", this); });
   document.getElementById("kb-clear").addEventListener("click", function() {
-    if (confirm("Clear the knowledge base? The chatbot will not be able to answer questions until it is reloaded.")) {
-      kbAction("clear", this);
-    }
+    if (confirm("Clear the knowledge base? The chatbot will not answer questions until reloaded.")) kbAction("clear", this);
   });
+
+  // ── Modal ────────────────────────────────────────────────────────────────
+
+  let jobPoller = null;
+  let jobEta = 0;
+  let jobStartedAt = null;
+  let activeJobBtn = null;
+
+  function fmtTime(s) {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m > 0 ? m + "m " + sec + "s" : sec + "s";
+  }
+
+  function openModal(title, subtitle) {
+    document.getElementById("modal-title").textContent = title;
+    document.getElementById("modal-subtitle").textContent = subtitle;
+    document.getElementById("modal-message").textContent = "";
+    document.getElementById("modal-icon").textContent = "";
+    document.getElementById("modal-icon").className = "modal-icon";
+    document.getElementById("modal-close").style.display = "none";
+    document.getElementById("modal-elapsed").textContent = "0s elapsed";
+    document.getElementById("modal-eta").textContent = "";
+    setProgress(0);
+    document.getElementById("job-modal").classList.add("active");
+  }
+
+  function closeModal() {
+    document.getElementById("job-modal").classList.remove("active");
+    if (jobPoller) { clearInterval(jobPoller); jobPoller = null; }
+    if (activeJobBtn) { activeJobBtn.disabled = false; activeJobBtn = null; }
+  }
+
+  function setProgress(pct, state) {
+    const fill = document.getElementById("modal-progress-fill");
+    fill.style.width = pct + "%";
+    fill.className = "modal-progress-fill" + (state ? " progress-" + state : "");
+  }
+
+  function updateModalRunning(elapsed, eta) {
+    const pct = Math.min(90, jobEta > 0 ? (elapsed / jobEta) * 100 : 0);
+    setProgress(pct);
+    document.getElementById("modal-elapsed").textContent = fmtTime(elapsed) + " elapsed";
+    document.getElementById("modal-eta").textContent = eta > 0 ? "~" + fmtTime(eta) + " remaining" : "finishing up...";
+  }
+
+  function updateModalDone(message) {
+    setProgress(100, "done");
+    document.getElementById("modal-icon").textContent = "✓";
+    document.getElementById("modal-icon").className = "modal-icon icon-done";
+    document.getElementById("modal-elapsed").textContent = "";
+    document.getElementById("modal-eta").textContent = "";
+    document.getElementById("modal-message").textContent = message;
+    document.getElementById("modal-close").style.display = "inline-block";
+  }
+
+  function updateModalError(message) {
+    setProgress(document.getElementById("modal-progress-fill").style.width.replace("%","") || 0, "error");
+    document.getElementById("modal-icon").textContent = "✕";
+    document.getElementById("modal-icon").className = "modal-icon icon-error";
+    document.getElementById("modal-eta").textContent = "";
+    document.getElementById("modal-message").textContent = message;
+    document.getElementById("modal-close").style.display = "inline-block";
+  }
+
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+
+  // ── Job runner ───────────────────────────────────────────────────────────
+
+  async function startJob(startUrl, statusUrl, title, subtitle, eta, triggerBtn) {
+    activeJobBtn = triggerBtn;
+    triggerBtn.disabled = true;
+    jobEta = eta;
+
+    openModal(title, subtitle);
+
+    try {
+      const res = await fetch(startUrl, {method: "POST"});
+      if (res.status === 409) { updateModalError("Already in progress — check back shortly."); return; }
+      if (!res.ok) {
+        const d = await res.json();
+        updateModalError("Failed to start: " + (d.error || "Unknown error"));
+        return;
+      }
+    } catch (e) {
+      updateModalError("Request failed.");
+      return;
+    }
+
+    jobPoller = setInterval(() => pollJob(statusUrl), 2000);
+    pollJob(statusUrl);
+  }
+
+  async function pollJob(statusUrl) {
+    try {
+      const res = await fetch(statusUrl);
+      const data = await res.json();
+
+      if (data.status === "running") {
+        updateModalRunning(data.elapsed_seconds || 0, data.eta_seconds || 0);
+      } else if (data.status === "done") {
+        clearInterval(jobPoller); jobPoller = null;
+        if (activeJobBtn) { activeJobBtn.disabled = false; activeJobBtn = null; }
+        updateModalDone(data.message || "Complete.");
+        // Auto-reload KB
+        kbAction("reload", document.getElementById("kb-reload"));
+      } else if (data.status === "error") {
+        clearInterval(jobPoller); jobPoller = null;
+        if (activeJobBtn) { activeJobBtn.disabled = false; activeJobBtn = null; }
+        updateModalError(data.message || "Unknown error.");
+      }
+    } catch (e) {
+      // network blip — keep polling
+    }
+  }
+
+  // ── Button wiring ────────────────────────────────────────────────────────
+
+  document.getElementById("kb-scrape").addEventListener("click", function() {
+    if (!confirm("Re-scrape the Chick-fil-A website? This will take ~3 minutes and update all menu and location data.")) return;
+    startJob(
+      "/api/chat/dashboard/scrape/",
+      "/api/chat/dashboard/scrape/status/",
+      "Re-scraping Site",
+      "Fetching menu items, locations, and nutrition data from chick-fil-a.com",
+      180,
+      this
+    );
+  });
+
+  document.getElementById("kb-pdf").addEventListener("click", function() {
+    if (!confirm("Extract nutrition data from the PDF? This will call GPT-4o-mini and takes ~30 seconds.")) return;
+    startJob(
+      "/api/chat/dashboard/extract-pdf/",
+      "/api/chat/dashboard/extract-pdf/status/",
+      "Extracting PDF",
+      "Parsing nutrition.pdf with GPT-4o-mini and updating knowledge base",
+      30,
+      this
+    );
+  });
+
+  // Resume polling on page load if a job is already running
+  (async function resumePolling() {
+    const [scrapeRes, pdfRes] = await Promise.all([
+      fetch("/api/chat/dashboard/scrape/status/"),
+      fetch("/api/chat/dashboard/extract-pdf/status/"),
+    ]);
+    const scrape = await scrapeRes.json();
+    const pdf = await pdfRes.json();
+
+    if (scrape.status === "running") {
+      jobEta = 180;
+      activeJobBtn = document.getElementById("kb-scrape");
+      activeJobBtn.disabled = true;
+      openModal("Re-scraping Site", "Fetching menu items, locations, and nutrition data from chick-fil-a.com");
+      jobPoller = setInterval(() => pollJob("/api/chat/dashboard/scrape/status/"), 2000);
+      pollJob("/api/chat/dashboard/scrape/status/");
+    } else if (pdf.status === "running") {
+      jobEta = 30;
+      activeJobBtn = document.getElementById("kb-pdf");
+      activeJobBtn.disabled = true;
+      openModal("Extracting PDF", "Parsing nutrition.pdf with GPT-4o-mini and updating knowledge base");
+      jobPoller = setInterval(() => pollJob("/api/chat/dashboard/extract-pdf/status/"), 2000);
+      pollJob("/api/chat/dashboard/extract-pdf/status/");
+    }
+  })();
 
   // Init
   loadLogs(currentPage);

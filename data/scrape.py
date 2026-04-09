@@ -10,12 +10,12 @@ Usage:
 """
 
 import asyncio
+import html as html_module
 import json
 import re
 from pathlib import Path
 
 import httpx
-from playwright.async_api import async_playwright
 
 from data.cleaners import (
     normalize_address,
@@ -39,7 +39,9 @@ HEADERS = {
 }
 
 # max simultaneous HTTP connections when fetching location pages
-LOCATION_CONCURRENCY = 20
+LOCATION_CONCURRENCY = 50
+
+NUTRITION_ALLERGENS_URL = f"{BASE}/nutrition-allergens"
 
 # helpers
 
@@ -123,72 +125,71 @@ def normalize_location(loc: dict) -> dict:
     }
 
 
-# calorie scraping via Playwright
+# nutrition data from nutrition-allergens page
 
-MENU_CATEGORIES = [
-    "/menu/breakfast",
-    "/menu/entrees",
-    "/menu/salads",
-    "/menu/sides",
-    "/menu/kids-meals",
-    "/menu/family-meals",
-    "/menu/treats",
-    "/menu/beverages",
-    "/menu/sauces-dressings",
-]
+def _normalize_name(s: str) -> str:
+    """Normalize item name for fuzzy matching."""
+    s = html_module.unescape(s)
+    s = s.replace("\u2019", "'").replace("\u2018", "'")
+    s = s.lower()
+    s = re.sub(r"[®™°]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
-async def scrape_calories() -> dict[str, int]:
+
+async def fetch_nutrition(client: httpx.AsyncClient) -> dict[str, dict]:
     """
-    Load each menu category page with Playwright and extract calorie counts.
-    Returns a dict of  normalised_name -> calories.
+    Fetch https://www.chick-fil-a.com/nutrition-allergens and extract the
+    full nutrition table embedded in the page's JS state.
+    Returns a dict of normalised_name -> {label: value, ...}.
     """
-    calorie_map: dict[str, int] = {}
+    r = await client.get(NUTRITION_ALLERGENS_URL, headers={**HEADERS, "Accept": "text/html"})
+    r.raise_for_status()
 
-    def normalise(name: str) -> str:
-        return re.sub(r"[^a-z0-9]", "", name.lower())
-
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        ctx = await browser.new_context(user_agent=HEADERS["User-Agent"])
-        page = await ctx.new_page()
-
-        for path in MENU_CATEGORIES:
+    scripts = re.findall(r"<script[^>]*>(.*?)</script>", r.text, re.DOTALL)
+    store = None
+    for s in scripts:
+        if "nutrition-allergens-table-store" in s:
             try:
-                await page.goto(BASE + path, wait_until="networkidle", timeout=25000)
+                store = json.loads(s)["state"]["nutrition-allergens-table-store"]
+                break
             except Exception:
                 continue
 
-            cards = await page.locator(
-                "li[class*='menu' i], li[class*='card' i], article, [class*='MenuItem' i]"
-            ).all()
+    if not store:
+        print("  WARNING: could not parse nutrition-allergens page")
+        return {}
 
-            for card in cards:
-                try:
-                    name = (await card.locator("h2, h3, [class*='name' i]").first.inner_text()).strip()
-                except Exception:
-                    continue
-                if not name:
-                    continue
+    nutrition_map: dict[str, dict] = {}
+    for cat in store.get("activeTableData", []):
+        for item in cat.get("items", []):
+            fields = {f["label"]: f["value"] for f in item.get("fields", [])}
+            nutrition_map[_normalize_name(item["title"])] = fields
+            for sub in item.get("sub_items", []):
+                sub_fields = {f["label"]: f["value"] for f in sub.get("fields", [])}
+                nutrition_map[_normalize_name(sub["title"])] = sub_fields
 
-                cal_raw = ""
-                try:
-                    cal_raw = (await card.locator("[class*='cal' i]").first.inner_text()).strip()
-                except Exception:
-                    pass
-                if not cal_raw:
-                    try:
-                        cal_raw = (await card.locator("p").first.inner_text()).strip()
-                    except Exception:
-                        pass
+    print(f"  nutrition data found for {len(nutrition_map)} items")
+    return nutrition_map
 
-                m = re.search(r"(\d[\d,]*)\s*cal", cal_raw, re.IGNORECASE)
-                if m:
-                    calorie_map[normalise(name)] = int(m.group(1).replace(",", ""))
 
-        await browser.close()
-
-    print(f"  calorie data found for {len(calorie_map)} items")
-    return calorie_map
+def merge_nutrition(menu: list[dict], nutrition_map: dict[str, dict]) -> list[dict]:
+    """Match menu items to nutrition data by name and attach the nutrition dict."""
+    matched = 0
+    for item in menu:
+        norm = _normalize_name(item.get("name", ""))
+        if norm in nutrition_map:
+            item["nutrition"] = nutrition_map[norm]
+            matched += 1
+        else:
+            # Try partial match
+            for nk, nv in nutrition_map.items():
+                if norm in nk or nk in norm:
+                    item["nutrition"] = nv
+                    matched += 1
+                    break
+    print(f"  matched nutrition for {matched}/{len(menu)} menu items")
+    return menu
 
 
 # menu
@@ -220,23 +221,15 @@ async def fetch_menu(client: httpx.AsyncClient) -> list[dict]:
         except Exception:
             pass
 
-    print("  scraping calorie data from menu pages …")
-    calorie_map = await scrape_calories()
-
-    def normalise(name: str) -> str:
-        return re.sub(r"[^a-z0-9]", "", name.lower())
-
     menu = []
     for item in raw_items:
         tax_ids = item.get("menu_taxonomy") or []
         categories = [tax_map[t] for t in tax_ids if t in tax_map]
-        name = item["title"]["rendered"]
         menu.append({
-            "name":           name,
+            "name":           item["title"]["rendered"],
             "slug":           item["slug"],
             "category":       categories[0] if categories else None,
             "all_categories": categories,
-            "calories":       calorie_map.get(normalise(name)),
             "url":            item.get("link", ""),
             "image_url":      media_map.get(item.get("featured_media", 0)),
         })
@@ -306,15 +299,20 @@ async def main():
 
     async with httpx.AsyncClient(
         headers=HEADERS, timeout=20, follow_redirects=True,
-        limits=httpx.Limits(max_connections=30, max_keepalive_connections=20),
+        limits=httpx.Limits(max_connections=60, max_keepalive_connections=40),
     ) as client:
-        print("[ 1/2 ] Menu")
+        print("[ 1/3 ] Menu")
         menu = await fetch_menu(client)
         print(f"  ✓ {len(menu)} menu items\n")
 
-        print("[ 2/2 ] Locations")
+        print("[ 2/3 ] Locations")
         locations = await fetch_locations(client)
         print(f"  ✓ {len(locations)} locations\n")
+
+        print("[ 3/3 ] Nutrition (nutrition-allergens page)")
+        nutrition_map = await fetch_nutrition(client)
+        menu = merge_nutrition(menu, nutrition_map)
+        print()
 
     OUT_FILE.write_text(
         json.dumps({"menu": menu, "locations": locations}, indent=2, ensure_ascii=False),
