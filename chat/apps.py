@@ -13,5 +13,15 @@ class ChatConfig(AppConfig):
         if is_dev_server and os.environ.get("RUN_MAIN") != "true":
             return
 
-        from .views import reload_knowledge_base
-        reload_knowledge_base()
+        from .views import get_or_build_store, load_location_data, _get_connection_string
+
+        if _get_connection_string():
+            # With pgvector, documents are already persisted in PostgreSQL.
+            # Just connect to the existing collection — no need to re-embed.
+            get_or_build_store()
+        else:
+            # Local dev with SQLite — need to load into memory each time.
+            from .views import reload_knowledge_base
+            reload_knowledge_base()
+
+        load_location_data()

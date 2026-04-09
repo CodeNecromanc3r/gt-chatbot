@@ -19,7 +19,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.vectorstores import InMemoryVectorStore
+from langchain_postgres import PGVector
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from .models import Conversation
@@ -32,6 +32,17 @@ _pdf_state: dict = {"status": "idle", "started_at": None, "finished_at": None, "
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "chickfila.json"
 NUTRITION_FILE = Path(__file__).resolve().parent.parent / "data" / "nutrition-facts.json"
+COLLECTION_NAME = "chickfila_docs"
+
+
+def _get_connection_string():
+    """Build the PostgreSQL connection string from DATABASE_URL or Django settings."""
+    db_url = os.getenv("DATABASE_URL")
+    if db_url:
+        # PGVector needs postgresql://, not postgres://
+        return db_url.replace("postgres://", "postgresql://", 1)
+    # Fallback for local dev with SQLite — use in-memory store
+    return None
 
 LOCATION_KEYWORDS = {
     "location", "locations", "address", "near", "nearby", "closest", "closest",
@@ -44,13 +55,27 @@ def get_embeddings():
     return OpenAIEmbeddings(model=EMBEDDING_MODEL)
 
 
-def get_or_build_store(documents):
+def get_or_build_store(documents=None):
     global rag_store
-    if rag_store is None:
-        embeddings = get_embeddings()
-        rag_store = InMemoryVectorStore.from_documents(documents, embeddings)
+    embeddings = get_embeddings()
+    conn = _get_connection_string()
+    if conn:
+        # Use PostgreSQL with pgvector for persistent storage
+        rag_store = PGVector(
+            embeddings=embeddings,
+            collection_name=COLLECTION_NAME,
+            connection=conn,
+            use_jsonb=True,
+        )
+        if documents:
+            rag_store.add_documents(documents)
     else:
-        rag_store.add_documents(documents)
+        # Fallback for local dev without PostgreSQL
+        from langchain_core.vectorstores import InMemoryVectorStore
+        if documents:
+            rag_store = InMemoryVectorStore.from_documents(documents, embeddings)
+        elif rag_store is None:
+            rag_store = InMemoryVectorStore(embeddings)
     return rag_store
 
 
@@ -173,6 +198,10 @@ def build_documents():
 def reload_knowledge_base():
     """Clear and rebuild the vector store and location data from disk."""
     global rag_store
+    conn = _get_connection_string()
+    if conn and rag_store is not None:
+        # Drop existing collection to start fresh
+        rag_store.delete_collection()
     rag_store = None
     docs = build_documents()
     get_or_build_store(docs)
@@ -632,6 +661,8 @@ def dashboard_api_clear(request):
     global rag_store, location_data
     if request.method != "POST":
         return JsonResponse({"error": "POST required"}, status=405)
+    if rag_store is not None and _get_connection_string():
+        rag_store.delete_collection()
     rag_store = None
     location_data = []
     return JsonResponse({"status": "ok"})
