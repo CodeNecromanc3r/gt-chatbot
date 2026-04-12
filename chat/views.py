@@ -165,6 +165,8 @@ def build_documents():
             if hours_str:
                 text += f" Hours: {hours_str}."
             metadata = {"topic": "Location", "title": name}
+            if loc.get("url"):
+                metadata["url"] = loc["url"]
             if addr.get("city"):
                 metadata["city"] = addr.get("city")
             docs.append(Document(page_content=text, metadata=metadata))
