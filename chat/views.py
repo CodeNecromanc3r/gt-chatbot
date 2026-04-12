@@ -345,6 +345,8 @@ def _is_location_query(query: str) -> bool:
 def _build_prompt(location_query: bool = False):
     hint = (
         " Mention specific names, addresses, phone numbers, and hours when available."
+        " If the user asks about a location AT a specific place (like a university or mall),"
+        " prioritize the location that is directly at that place over nearby ones."
         if location_query else ""
     )
     source_instruction = (
