@@ -7,7 +7,9 @@ import subprocess
 from pathlib import Path
 from datetime import timedelta
 from django.http import JsonResponse
-from django.shortcuts import render
+from django.shortcuts import render, redirect
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.db.models import Avg
 from django.utils import timezone
@@ -22,7 +24,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_postgres import PGVector
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-from .models import Conversation
+from .models import Conversation, ChatSession
 
 rag_store = None
 location_data: list[dict] = []   # raw location records for keyword search
@@ -47,10 +49,68 @@ def _get_connection_string():
     return parsed.render_as_string(hide_password=False)
 
 LOCATION_KEYWORDS = {
-    "location", "locations", "address", "near", "nearby", "closest", "closest",
+    "location", "locations", "address", "near", "nearby", "closest",
     "where", "hours", "open", "close", "closing", "opening", "phone", "directions",
     "drive", "drivethru", "drive-thru", "restaurant", "restaurants", "store", "stores",
 }
+
+NUTRITION_KEYWORDS = {
+    "calorie", "calories", "nutrition", "nutritional", "protein", "fat", "carb",
+    "carbs", "carbohydrate", "carbohydrates", "sodium", "sugar", "fiber", "cholesterol",
+    "allergen", "allergens", "allergy", "allergies", "gluten", "dairy", "soy", "peanut",
+    "healthy", "healthiest", "diet", "dietary", "keto", "vegan",
+    "vegetarian", "serving", "macros", "ingredients",
+}
+
+MENU_KEYWORDS = {
+    "menu", "item", "items", "sandwich", "nugget", "nuggets", "wrap", "wraps",
+    "salad", "salads", "soup", "soups", "breakfast", "lunch", "dinner", "dessert",
+    "desserts", "drink", "drinks", "beverage", "beverages", "sauce", "sauces",
+    "fries", "waffle", "lemonade", "tea", "coffee", "milkshake", "shake",
+    "chicken", "spicy", "grilled", "fried", "strips", "cool", "meal", "meals",
+    "combo", "kids", "sides", "side", "entree", "entrees", "price", "cost",
+}
+
+COMPARISON_KEYWORDS = {
+    "compare", "comparison", "versus", "vs", "better", "worse", "difference",
+    "between", "rather", "instead", "healthier",
+}
+
+RECOMMENDATION_KEYWORDS = {
+    "recommend", "recommendation", "suggest", "suggestion", "best", "favorite",
+    "popular", "top", "should", "try",
+}
+
+# Words that anchor a query to Chick-fil-A topics even without other intent keywords
+CFA_ANCHOR_KEYWORDS = {
+    "chick", "fil", "chickfila", "chick-fil-a", "cfa",
+}
+
+
+def _classify_intent(query: str) -> str:
+    """Classify user query into an intent category for prompt routing."""
+    tokens = set(re.findall(r"[a-z]+", query.lower()))
+
+    has_location = bool(tokens & LOCATION_KEYWORDS)
+    has_nutrition = bool(tokens & NUTRITION_KEYWORDS)
+    has_menu = bool(tokens & MENU_KEYWORDS)
+    has_comparison = bool(tokens & COMPARISON_KEYWORDS)
+    has_recommendation = bool(tokens & RECOMMENDATION_KEYWORDS)
+    has_anchor = bool(tokens & CFA_ANCHOR_KEYWORDS)
+
+    # Specific intents take priority (checked in order of specificity)
+    if has_location:
+        return "location"
+    if has_comparison and (has_nutrition or has_menu):
+        return "comparison"
+    if has_nutrition:
+        return "nutrition"
+    if has_recommendation and (has_menu or has_anchor):
+        return "recommendation"
+    if has_menu or has_anchor:
+        return "menu"
+
+    return "irrelevant"
 
 
 def get_embeddings():
@@ -339,36 +399,66 @@ def search_locations_with_sources(query: str, max_results: int = 10) -> tuple:
 
 
 
-def _is_location_query(query: str) -> bool:
-    tokens = set(re.findall(r"[a-z]+", query.lower()))
-    return bool(tokens & LOCATION_KEYWORDS)
-
-
-def _build_prompt(location_query: bool = False):
-    hint = (
+INTENT_PROMPTS = {
+    "location": (
+        "You are a helpful Chick-fil-A assistant specializing in restaurant locations."
         " Mention specific names, addresses, phone numbers, and hours when available."
         " If the user asks about a location AT a specific place (like a university or mall),"
         " prioritize the location that is directly at that place over nearby ones."
-        if location_query else ""
-    )
-    source_instruction = (
-        "When answering, always start with 'Based on the Chick-fil-A website/locations data, ...' to reference your source."
-        if location_query else
-        "When answering, always start with 'Based on the Chick-fil-A menu/nutrition data, ...' to reference your source."
-    )
+        " Use the context below to answer the user's question."
+        " When answering, always start with 'Based on the Chick-fil-A locations data, ...' to reference your source."
+        " Only say you don't have information if the context is completely unrelated"
+        " to the question.\n\nContext:\n{context}"
+    ),
+    "nutrition": (
+        "You are a helpful Chick-fil-A assistant specializing in nutrition and allergen information."
+        " Use the context below to answer the user's question."
+        " When answering, always start with 'Based on the Chick-fil-A nutrition data, ...' to reference your source."
+        " Always state the serving size the figures apply to."
+        " Never present per-100g figures as whole-meal calories."
+        " If you only have per-serving data and the user asks about a whole meal, say so clearly."
+        " Only say you don't have information if the context is completely unrelated"
+        " to the question.\n\nContext:\n{context}"
+    ),
+    "menu": (
+        "You are a helpful Chick-fil-A assistant specializing in the restaurant menu."
+        " Use the context below to answer the user's question."
+        " When answering, always start with 'Based on the Chick-fil-A menu data, ...' to reference your source."
+        " Be specific about menu item names, categories, and availability."
+        " Only say you don't have information if the context is completely unrelated"
+        " to the question.\n\nContext:\n{context}"
+    ),
+    "comparison": (
+        "You are a helpful Chick-fil-A assistant. The user wants to compare menu items."
+        " Use the context below to provide a clear, structured comparison."
+        " When answering, always start with 'Based on the Chick-fil-A menu/nutrition data, ...' to reference your source."
+        " Present differences in a clear format (e.g. calories, protein, price)."
+        " State serving sizes when comparing nutrition facts."
+        " Only say you don't have information if the context is completely unrelated"
+        " to the question.\n\nContext:\n{context}"
+    ),
+    "recommendation": (
+        "You are a helpful and friendly Chick-fil-A assistant giving menu recommendations."
+        " Use the context below to suggest items that match the user's preferences."
+        " When answering, always start with 'Based on the Chick-fil-A menu data, ...' to reference your source."
+        " Be enthusiastic but honest. Mention specific item names and why you recommend them."
+        " Only say you don't have information if the context is completely unrelated"
+        " to the question.\n\nContext:\n{context}"
+    ),
+    "irrelevant": (
+        "You are a helpful Chick-fil-A assistant. The user has asked a question that is not related"
+        " to Chick-fil-A's menu, nutrition, locations, or services."
+        " Politely let them know that you can only help with Chick-fil-A related topics,"
+        " and suggest what you can help with (menu items, nutrition info, restaurant locations, hours, etc.)."
+        " Keep your response brief and friendly."
+    ),
+}
+
+
+def _build_prompt(intent: str):
+    system_msg = INTENT_PROMPTS.get(intent, INTENT_PROMPTS["menu"])
     return ChatPromptTemplate.from_messages([
-        ("system", (
-            "You are a helpful Chick-fil-A assistant."
-            + hint
-            + " Use the context below to answer the user's question. "
-            + source_instruction + " "
-            "When answering nutrition questions, always state the serving size the figures apply to. "
-            "Never present per-100g figures as whole-meal calories. "
-            "If you only have per-serving data and the user asks about a whole meal, say so clearly. "
-            "Only say you don't have information if the context is completely unrelated "
-            "to the question.\n\n"
-            "Context:\n{context}"
-        )),
+        ("system", system_msg),
         ("human", "{question}"),
     ])
 
@@ -392,45 +482,42 @@ def _extract_sources(docs):
     return sources
 
 
-def create_rag_chain(query: str):
-    if rag_store is None:
-        raise ValueError("No knowledge base loaded yet.")
-
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
-    location_query = _is_location_query(query)
-    retriever = rag_store.as_retriever(search_kwargs={"k": 6})
-    context_fn = retriever | _format_docs
-
-    return (
-        {"context": context_fn, "question": RunnablePassthrough()}
-        | _build_prompt(location_query)
-        | llm
-        | StrOutputParser()
-    )
-
-
 def create_rag_chain_with_sources(query: str):
     """Create RAG chain that returns both answer and source documents."""
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
+    intent = _classify_intent(query)
+
+    if intent == "irrelevant":
+        prompt = _build_prompt(intent)
+        answer = (prompt | llm | StrOutputParser()).invoke({
+            "question": query
+        })
+        return {"answer": answer, "sources": [], "intent": intent}
+
     if rag_store is None:
         raise ValueError("No knowledge base loaded yet.")
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
-    location_query = _is_location_query(query)
     retriever = rag_store.as_retriever(search_kwargs={"k": 6})
-
     docs = retriever.invoke(query)
     context = _format_docs(docs)
-    prompt = _build_prompt(location_query)
+    prompt = _build_prompt(intent)
     answer = (prompt | llm | StrOutputParser()).invoke({
         "context": context,
         "question": query
     })
     sources = _extract_sources(docs)
-    return {"answer": answer, "sources": sources}
+    return {"answer": answer, "sources": sources, "intent": intent}
 
 
 def interface(request):
-    return render(request, "chat/index.html")
+    session_id = request.GET.get("session")
+    context = {}
+    if request.user.is_authenticated:
+        sessions = list(request.user.chat_sessions.values("id", "title", "updated_at")[:50])
+        context["chat_sessions"] = json.dumps(sessions, default=str)
+        if session_id:
+            context["active_session_id"] = int(session_id)
+    return render(request, "chat/index.html", context)
 
 
 @csrf_exempt
@@ -476,32 +563,52 @@ def query_chat(request):
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
     query = data.get("query")
+    session_id = data.get("session_id")
     if not query:
         return JsonResponse({"error": "Missing query parameter"}, status=400)
 
     if rag_store is None:
         return JsonResponse({"error": "Knowledge base not loaded yet."}, status=503)
 
+    user = request.user if request.user.is_authenticated else None
+    session = None
+    if user and session_id:
+        session = ChatSession.objects.filter(id=session_id, user=user).first()
+
     start = time.perf_counter()
     try:
         result = create_rag_chain_with_sources(query=query)
         answer = result.get("answer", "")
         sources = result.get("sources", [])
+        intent = result.get("intent", "menu")
         elapsed_ms = int((time.perf_counter() - start) * 1000)
-        Conversation(
+        conv = Conversation(
+            user=user,
+            session=session,
             query=query,
             answer=answer,
             response_time_ms=elapsed_ms,
             is_success=True,
-        ).save()
+        )
+        conv.save()
+        # Auto-title the session from the first message
+        if session and session.title == "New Chat":
+            session.title = query[:80]
+            session.save(update_fields=["title", "updated_at"])
+        elif session:
+            session.save(update_fields=["updated_at"])
         return JsonResponse({
             "query": query,
             "answer": answer,
-            "sources": sources
+            "sources": sources,
+            "intent": intent,
+            "session_title": session.title if session else None,
         })
     except Exception as e:
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         Conversation(
+            user=user,
+            session=session,
             query=query,
             answer="",
             response_time_ms=elapsed_ms,
@@ -509,6 +616,94 @@ def query_chat(request):
             error_message=str(e),
         ).save()
         return JsonResponse({"error": str(e)}, status=500)
+
+
+# ── authentication ───────────────────────────────────────────────────────────
+
+def login_view(request):
+    if request.user.is_authenticated:
+        return redirect("interface")
+    error = None
+    if request.method == "POST":
+        username = request.POST.get("username", "").strip()
+        password = request.POST.get("password", "")
+        user = authenticate(request, username=username, password=password)
+        if user is not None:
+            login(request, user)
+            next_url = request.GET.get("next", "/")
+            return redirect(next_url)
+        error = "Invalid username or password."
+    return render(request, "chat/login.html", {"error": error})
+
+
+def register_view(request):
+    if request.user.is_authenticated:
+        return redirect("interface")
+    error = None
+    if request.method == "POST":
+        username = request.POST.get("username", "").strip()
+        password = request.POST.get("password", "")
+        confirm = request.POST.get("confirm_password", "")
+        if not username or not password:
+            error = "Username and password are required."
+        elif len(password) < 6:
+            error = "Password must be at least 6 characters."
+        elif password != confirm:
+            error = "Passwords do not match."
+        elif User.objects.filter(username=username).exists():
+            error = "Username already taken."
+        else:
+            user = User.objects.create_user(username=username, password=password)
+            login(request, user)
+            return redirect("interface")
+    return render(request, "chat/register.html", {"error": error})
+
+
+def logout_view(request):
+    logout(request)
+    return redirect("interface")
+
+
+# ── chat sessions API ────────────────────────────────────────────────────────
+
+@csrf_exempt
+@login_required(login_url="/login/")
+def api_sessions(request):
+    """GET = list sessions, POST = create session."""
+    if request.method == "GET":
+        sessions = request.user.chat_sessions.values("id", "title", "created_at", "updated_at")[:50]
+        return JsonResponse({"sessions": list(sessions)}, json_dumps_params={"default": str})
+    if request.method == "POST":
+        session = ChatSession.objects.create(user=request.user)
+        return JsonResponse({"id": session.id, "title": session.title})
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@csrf_exempt
+@login_required(login_url="/login/")
+def api_session_detail(request, session_id):
+    """GET = messages, DELETE = delete session."""
+    session = ChatSession.objects.filter(id=session_id, user=request.user).first()
+    if not session:
+        return JsonResponse({"error": "Session not found"}, status=404)
+    if request.method == "GET":
+        messages = session.messages.filter(is_success=True).order_by("created_at").values(
+            "id", "query", "answer", "created_at"
+        )
+        return JsonResponse({
+            "session": {"id": session.id, "title": session.title},
+            "messages": list(messages),
+        }, json_dumps_params={"default": str})
+    if request.method == "DELETE":
+        session.delete()
+        return JsonResponse({"status": "ok"})
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@login_required(login_url="/login/")
+def history_view(request):
+    sessions = request.user.chat_sessions.all()[:50]
+    return render(request, "chat/history.html", {"sessions": sessions})
 
 
 # ── admin dashboard ──────────────────────────────────────────────────────────
@@ -521,7 +716,7 @@ TIME_RANGES = {
     "all": None,
 }
 
-staff_required = user_passes_test(lambda u: u.is_staff, login_url="/admin/login/")
+staff_required = user_passes_test(lambda u: u.is_staff, login_url="/login/")
 
 
 def _filtered_qs(time_range):
@@ -532,7 +727,7 @@ def _filtered_qs(time_range):
     return qs
 
 
-@login_required(login_url="/admin/login/")
+@login_required(login_url="/login/")
 @staff_required
 def dashboard(request):
     time_range = request.GET.get("range", "24h")
@@ -560,7 +755,7 @@ def dashboard(request):
     })
 
 
-@login_required(login_url="/admin/login/")
+@login_required(login_url="/login/")
 @staff_required
 def dashboard_api_logs(request):
     time_range = request.GET.get("range", "24h")
@@ -592,7 +787,7 @@ def dashboard_api_logs(request):
     })
 
 
-@login_required(login_url="/admin/login/")
+@login_required(login_url="/login/")
 @staff_required
 def dashboard_api_chart(request):
     time_range = request.GET.get("range", "24h")
@@ -619,7 +814,7 @@ def dashboard_api_chart(request):
 
 
 @csrf_exempt
-@login_required(login_url="/admin/login/")
+@login_required(login_url="/login/")
 @staff_required
 def dashboard_api_reload(request):
     if request.method != "POST":
@@ -632,7 +827,7 @@ def dashboard_api_reload(request):
 
 
 @csrf_exempt
-@login_required(login_url="/admin/login/")
+@login_required(login_url="/login/")
 @staff_required
 def dashboard_api_clear(request):
     global rag_store, location_data
@@ -675,7 +870,7 @@ def _run_scraper():
 
 
 @csrf_exempt
-@login_required(login_url="/admin/login/")
+@login_required(login_url="/login/")
 @staff_required
 @require_POST
 def dashboard_api_scrape(request):
@@ -685,7 +880,7 @@ def dashboard_api_scrape(request):
     return JsonResponse({"status": "started"})
 
 
-@login_required(login_url="/admin/login/")
+@login_required(login_url="/login/")
 @staff_required
 def dashboard_api_scrape_status(request):
     state = dict(_scrape_state)
@@ -724,7 +919,7 @@ def _run_pdf_extractor():
 
 
 @csrf_exempt
-@login_required(login_url="/admin/login/")
+@login_required(login_url="/login/")
 @staff_required
 @require_POST
 def dashboard_api_extract_pdf(request):
@@ -734,7 +929,7 @@ def dashboard_api_extract_pdf(request):
     return JsonResponse({"status": "started"})
 
 
-@login_required(login_url="/admin/login/")
+@login_required(login_url="/login/")
 @staff_required
 def dashboard_api_extract_pdf_status(request):
     state = dict(_pdf_state)
